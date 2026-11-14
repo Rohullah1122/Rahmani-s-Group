@@ -1,0 +1,93 @@
+
+
+.navbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: azure;
+    padding: 1rem 2rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    position: sticky;
+
+  }
+  
+  .nav-logo {
+    display: flex;
+    align-items: center;
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: black;
+  }
+
+  .nav-logo span{
+    font-family: "Poetsen One", sans-serif;
+
+  }
+  
+  .nav-logo i {
+    margin-right: 0.5rem;
+  }
+  
+  .nav-links {
+    list-style: none;
+    display: flex;
+    gap: 1.5rem;
+  }
+  
+  .nav-links li a {
+    text-decoration: none;
+    color: #333;
+    font-weight: 500;
+    transition: color 0.3s ease;
+  }
+
+  .nav-logo i {
+    position: relative;
+    margin-right: 0.5rem;
+  }
+  
+  .nav-links li a {
+    position: relative;  /* Make the a-tag the parent for ::after */
+    text-decoration: none;
+    color: black;
+    font-weight: 500;
+    transition: color 0.3s ease;
+    padding-bottom: 4px;
+
+  }
+  
+  .nav-links li a::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    font-weight: bolder;
+    width: 0%;
+    height: 2px;
+    background-color: red;
+    transition: width 0.3s ease;
+  }
+  
+  .nav-links li a:hover::after {
+    width: 100%;
+  }
+
+
+
+  .contact-section h2 {
+    font-weight: 600;
+    color: #333;
+  }
+  
+  .contact-info p {
+    font-size: 16px;
+  }
+  
+  .contact-info i {
+    color: #333;
+  }
+  
+  .contact-info a:hover {
+    color: #007bff;
+  }
+  

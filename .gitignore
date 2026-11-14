@@ -1,4 +1,5 @@
 /Admin_side
-# secrets: never commit
-server/server.env
-.env
+node_modules/
+.vercel
+.env*
+!.env.example

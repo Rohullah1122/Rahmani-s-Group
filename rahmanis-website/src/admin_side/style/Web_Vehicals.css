@@ -1,0 +1,157 @@
+/* 🌐 Web_Vehicals.css - Professional design */
+
+/* Vehicle grid */
+.Cardive {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 20px;
+  padding: 20px;
+  justify-items: center;
+}
+
+/* Search bar */
+.searchdiv {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+  margin: 20px auto;
+  width: 90%;
+  max-width: 600px;
+  background-color: #f5f5f5;
+  border-radius: 30px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.textsearch {
+  border-radius: 20px;
+  width: 100%;
+  padding: 10px 15px;
+  border: 1px solid #ccc;
+  font-size: 16px;
+  outline: none;
+  transition: all 0.3s ease;
+}
+
+.textsearch:focus {
+  border-color: #1976d2;
+  box-shadow: 0 0 6px rgba(25, 118, 210, 0.3);
+}
+
+/* Vehicle cards */
+.vehicle-card {
+  max-width: 280px;
+  border-radius: 15px !important;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.vehicle-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+}
+
+.vehicle-image {
+  height: 160px;
+  object-fit: cover;
+  border-top-left-radius: 15px !important;
+  border-top-right-radius: 15px !important;
+}
+
+.vehicle-subtitle {
+  color: #666;
+  font-size: 14px;
+}
+
+/* Dialog images gallery */
+.dialog-image {
+  width: 120px;
+  height: 80px;
+  object-fit: cover;
+  margin: 5px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+  border: 2px solid transparent;
+}
+
+.dialog-image:hover {
+  transform: scale(1.05);
+  border-color: #1976d2;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+
+/* Vehicle Info Dialog layout */
+.MuiDialogContent-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.MuiDialogContent-root img {
+  width: 100%;
+  max-height: 300px;
+  object-fit: contain;
+  border-radius: 10px;
+}
+
+/* Full-size image viewer */
+.full-image-dialog {
+  background-color: #000 !important;
+  text-align: center;
+  position: relative;
+  padding: 0 !important;
+}
+
+.full-image {
+  width: auto;
+  max-width: 90%;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 10px;
+  margin: 10px auto;
+}
+
+/* Nav buttons for full image */
+.nav-button {
+  position: absolute !important;
+  top: 50%;
+  transform: translateY(-50%);
+  background-color: rgba(0, 0, 0, 0.5) !important;
+  color: white !important;
+  min-width: 40px !important;
+  border-radius: 50% !important;
+}
+
+.nav-button.left {
+  left: 10px;
+}
+
+.nav-button.right {
+  right: 10px;
+}
+
+.nav-button:hover {
+  background-color: rgba(0, 0, 0, 0.8) !important;
+}
+
+/* Full image close bar */
+.full-image-close {
+  display: flex;
+  justify-content: center;
+  background-color: #000;
+  padding: 10px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .Cardive {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  }
+
+  .dialog-image {
+    width: 80px;
+    height: 50px;
+  }
+}

@@ -2,7 +2,7 @@ sequenceDiagram
     actor A as Admin
     participant W as Admin panel
     participant S as Express API
-    participant D as SQL Server
+    participant D as PostgreSQL
     A->>W: Add vehicle with supplier and parts
     W->>S: POST /api/insert-car
     S->>D: insert supplier, car, its parts and inventory

@@ -5,6 +5,7 @@ erDiagram
     parts ||--o{ inventory : "stocked as"
     parts ||--o{ sales : "sold in"
     customers ||--o{ sales : "buys"
+    payments ||--o{ sales : "paid by"
     suppliers {
         int supplier_id PK
         varchar name
@@ -48,6 +49,8 @@ erDiagram
         int sale_id PK
         int customer_id FK
         int part_id FK
+        int payment_id FK
+        date sale_date
         decimal price_sold
         decimal Amount_paid
         decimal Amount_pending
@@ -73,10 +76,15 @@ erDiagram
         varchar full_name
         varchar email
         text message
-        bit is_read
+        boolean is_read
+    }
+    payments {
+        int payment_id PK
+        varchar payment_method
     }
     admin_users {
-        int id PK
+        int admin_id PK
+        varchar username UK
         varchar email UK
         varchar password_hash
     }

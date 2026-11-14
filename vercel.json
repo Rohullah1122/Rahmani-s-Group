@@ -1,0 +1,12 @@
+{
+  "installCommand": "npm install --prefix server && npm install --prefix rahmanis-website",
+  "buildCommand": "node server/migrate.js && cd rahmanis-website && CI=false npm run build",
+  "outputDirectory": "rahmanis-website/build",
+  "functions": {
+    "api/index.js": { "maxDuration": 30 }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}
