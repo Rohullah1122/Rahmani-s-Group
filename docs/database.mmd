@@ -1,0 +1,82 @@
+erDiagram
+    direction TB
+    suppliers ||--o{ cars : "sells"
+    cars ||--o{ parts : "is split into"
+    parts ||--o{ inventory : "stocked as"
+    parts ||--o{ sales : "sold in"
+    customers ||--o{ sales : "buys"
+    suppliers {
+        int supplier_id PK
+        varchar name
+        varchar phone
+        varchar email
+        varchar address
+    }
+    cars {
+        int car_id PK
+        int supplier_id FK
+        varchar vin_number UK
+        varchar make
+        varchar model
+        int year
+        decimal purchase_price
+        varchar image_path
+    }
+    parts {
+        int part_id PK
+        int car_id FK
+        varchar part_name
+        varchar condition
+        decimal cost_price
+        decimal selling_price
+        varchar status
+    }
+    inventory {
+        int inventory_id PK
+        int part_id FK
+        int quantity
+        varchar status
+    }
+    customers {
+        int customer_id PK
+        varchar First_name
+        varchar Last_name
+        varchar email
+        varchar phone
+    }
+    sales {
+        int sale_id PK
+        int customer_id FK
+        int part_id FK
+        decimal price_sold
+        decimal Amount_paid
+        decimal Amount_pending
+        varchar status
+    }
+    transactions {
+        int transaction_id PK
+        varchar type
+        decimal amount
+        int reference_id
+        date transaction_date
+    }
+    web_cars {
+        int car_id PK
+        varchar seller_name
+        varchar make
+        varchar model
+        int year
+        varchar photos
+    }
+    contact_section {
+        int id PK
+        varchar full_name
+        varchar email
+        text message
+        bit is_read
+    }
+    admin_users {
+        int id PK
+        varchar email UK
+        varchar password_hash
+    }

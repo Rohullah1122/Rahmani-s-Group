@@ -1,0 +1,16 @@
+sequenceDiagram
+    actor A as Admin
+    participant W as Admin panel
+    participant S as Express API
+    participant D as SQL Server
+    A->>W: Add vehicle with supplier and parts
+    W->>S: POST /api/insert-car
+    S->>D: insert supplier, car, its parts and inventory
+    S->>D: insert purchase transaction
+    A->>W: Record a sale for a customer
+    W->>S: POST /api/salesinseration
+    S->>D: insert sale (paid / pending)
+    S->>D: update inventory quantity
+    S->>D: insert sale transaction
+    W->>S: GET /api/getcalcluation
+    S-->>W: total sales, paid and pending for the dashboard

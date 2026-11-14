@@ -1,126 +1,95 @@
 # 🚗 Rahmani's Junkyard
 
-A full-stack web application for a car junkyard/salvage business, built with a **client-facing storefront** and a **secure admin panel** for managing inventory, sales, customers, and suppliers.
+A full stack web app for a car salvage yard: a **storefront** where customers find cars and parts or sell their own car, and a **secure admin panel** where staff manage vehicles, parts, inventory, sales, customers and suppliers.
 
-Live demo: _add your deployed link here, if any_
+![Welcome page](screenshots/welcome_page.png)
 
----
+## Screenshots
 
-## 📌 Overview
-
-Rahmani's Junkyard helps a salvage yard move online. Customers can browse available vehicles and parts, request to sell their own car, or contact the business directly. On the back end, staff manage every part of the operation — from vehicle intake to parts inventory, customer records, and payments — through a dedicated admin dashboard.
-
----
-
-## ✨ Features
-
-### Client Side
-- **Welcome / Home Page** — business overview and branding
-- **Inventory Search** — search vehicles by make and model, view available cars with images
-- **Sell My Car** — customers submit their vehicle info (name, phone, email, location, make/model/year) and upload at least 4 required photos (front, back, left, right)
-- **Contact Us** — contact form with business info and social links
-
-### Admin Side
-- **Secure Admin Login** with Forgot Password / Reset Password flow (email-based reset link)
-- **Dashboard** — sales and purchases overview with charts, total revenue tracking
-- **Add Vehicle** — intake form for new vehicles, including supplier info, part details, pricing, and inventory stock
-- **Vehicle Info** — full searchable table of vehicles and their associated parts, with edit/update/delete support
-- **Parts Management** — browse and search parts by name, condition, cost/sell price, and status
-- **Customer Management** — add, edit, and delete customer records
-- **Sales** — record new sales, track payment status (paid/pending), and view a transactions overview
-- **Supplier Management** — track supplier contact details tied to vehicle purchases
-- **Customer Contact Messages** — view and reply to messages submitted through the Contact Us form
-
----
-
-## 🛠️ Tech Stack
-
-> _Fill in with what you actually used — example below:_
-
-- **Frontend:** HTML, CSS, JavaScript (React, if used)
-- **Backend:** Node.js, Express
-- **Database:** MySQL / SQL Server
-- **Authentication:** Session/JWT-based login, email-based password reset
-- **Other Tools:** Git, GitHub
-
----
-
-## 📸 Screenshots
-
-| Welcome Page | Inventory Search | Sell My Car |
+| Inventory search | Car details | Sell My Car |
 |---|---|---|
-| ![Welcome](screenshots/welcome_page.png) | ![Inventory](screenshots/slider_page.png) | ![Sell My Car](screenshots/sell_mycar.png) |
+| ![Inventory](screenshots/Inventory.png) | ![Car details](screenshots/car_info.png) | ![Sell My Car](screenshots/sell_mycar.png) |
 
-| Admin Login | Admin Dashboard | Vehicle Info |
+| Admin dashboard | Add vehicle | Vehicle inventory |
 |---|---|---|
-| ![Admin Login](screenshots/Admin_login.png) | ![Dashboard](screenshots/Adming_dashboard.png) | ![Vehicle Info](screenshots/Vehicle_inventory.png) |
+| ![Dashboard](screenshots/Adming_dashboard.png) | ![Add vehicle](screenshots/add_vehicale.png) | ![Vehicle inventory](screenshots/Vehicle_inventory.png) |
 
-| Add Vehicle | Customers | Sales |
+| Customers | Sales and payments | Parts |
 |---|---|---|
-| ![Add Vehicle](screenshots/add_vehicale.png) | ![Customers](screenshots/customers.png) | ![Sales](screenshots/payments.png) |
+| ![Customers](screenshots/customers.png) | ![Payments](screenshots/payments.png) | ![Parts](screenshots/parts.png) |
 
-_Add or rename images as needed to match your `screenshots` folder._
+| Admin login | Forgot password | Contact us |
+|---|---|---|
+| ![Admin login](screenshots/Admin_login.png) | ![Forgot password](screenshots/forget_password.png) | ![Contact](screenshots/Contact_us.png) |
 
----
+## Features
 
-## 🚀 Getting Started
+**Customers**
+- Search vehicles by make and model, with photos and details
+- **Sell My Car:** send the car's details with 4 required photos (front, back, left, right)
+- Contact form that lands in the admin's inbox
 
-### Prerequisites
-- Node.js installed
-- A database (MySQL/SQL Server) set up and running
+**Admin**
+- Login with sessions, and password reset by email
+- Dashboard with sales and purchase charts, total sales, paid and pending amounts
+- Add a vehicle with its supplier, parts, prices and stock in one form
+- Search, edit and delete vehicles and parts
+- Manage customers and suppliers
+- Record sales with paid and pending payments; every purchase and sale is also logged as a transaction
+- Read, mark and delete customer messages; review cars customers want to sell
 
-### Installation
+## Tech stack
+
+| Part | Used |
+|---|---|
+| Frontend | React |
+| Backend | Node.js, Express 5 |
+| Database | Microsoft SQL Server (`mssql`) |
+| Auth | Passport (local strategy), express-session, bcrypt |
+| Files and email | Multer (photo uploads), Nodemailer (reset emails) |
+
+## Design
+
+### Use cases
+![Use case diagram](docs/use_cases.png)
+
+### Architecture
+![Architecture diagram](docs/architecture.png)
+
+### Database
+One car is bought from a supplier, split into many parts, and each part is stocked in inventory and sold to customers.
+
+![Database diagram](docs/database.png)
+
+### Buying a car and selling a part
+![Sale sequence diagram](docs/sale_flow.png)
+
+## Run it locally
+
+You need Node.js and a SQL Server database.
+
 ```bash
-# Clone the repository
-git clone https://github.com/Rohullah1122/rahmanis-website.git
-
-# Move into the project folder
-cd rahmanis-website
-
-# Install dependencies
+cd server
 npm install
-
-# Start the server
-npm start
+cp server.env.example server.env   # then fill in your own values
+node server.js                      # API on http://localhost:5000
 ```
 
-The app will run at `http://localhost:3000` (or your configured port).
+`server/server.env.example` lists every setting: database connection, the email account used for password resets, and the session secret. Never commit the real `server.env`.
 
-### Environment Variables
-Create a `.env` file in the root directory with values such as:
-```
-DB_HOST=your_database_host
-DB_USER=your_database_user
-DB_PASSWORD=your_database_password
-DB_NAME=your_database_name
-EMAIL_USER=your_email@gmail.com
-EMAIL_PASS=your_app_password
-PORT=3000
-```
+## Project structure
 
----
-
-## 📂 Project Structure
 ```
-rahmanis-website/
-├── public/            # Static assets (CSS, JS, images)
-├── screenshots/        # Project screenshots for this README
-├── routes/             # Backend routes
-├── views/              # Frontend pages/templates
-├── server.js           # Entry point
-└── README.md
+Rahmani-s-Group/
+├── rahmanis-website/   # React frontend
+├── server/
+│   ├── server.js       # Express API: auth, cars, parts, sales, customers, messages
+│   ├── uploads/        # uploaded car photos
+│   └── server.env.example
+├── screenshots/        # screenshots used in this README
+└── docs/               # diagrams (PNG + Mermaid source)
 ```
 
----
+## Author
 
-## 👤 Author
-
-**Rohullah Rahmani**
-- GitHub: [@Rohullah1122](https://github.com/Rohullah1122)
-- LinkedIn: _add your link here_
-
----
-
-## 📄 License
-
-This project is for educational/portfolio purposes.
+**Rohullah Hussaini** · [GitHub @Rohullah1122](https://github.com/Rohullah1122) · [Portfolio](https://rohullah-hussaini.vercel.app)

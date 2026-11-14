@@ -1,0 +1,7 @@
+flowchart LR
+    C(["Customer"]) --> W["React website<br/>storefront"]
+    A(["Admin"]) --> AP["React admin panel"]
+    W & AP -->|"REST /api/*"| API["Node.js + Express 5<br/>Passport sessions · Multer uploads"]
+    API --> DB[("SQL Server<br/>cars · parts · sales")]
+    API --> UP[("uploads/<br/>car photos")]
+    API --> M["Nodemailer<br/>password reset emails"]
