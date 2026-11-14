@@ -1,1 +1,4 @@
 /Admin_side
+# secrets: never commit
+server/server.env
+.env
