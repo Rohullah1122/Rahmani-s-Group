@@ -1,126 +1,121 @@
 # 🚗 Rahmani's Junkyard
 
-A full-stack web application for a car junkyard/salvage business, built with a **client-facing storefront** and a **secure admin panel** for managing inventory, sales, customers, and suppliers.
+A full stack web app for a car salvage yard: a **storefront** where customers find cars and parts or sell their own car, and a **secure admin panel** where staff manage vehicles, parts, inventory, sales, customers and suppliers.
 
-Live demo: _add your deployed link here, if any_
+![Welcome page](screenshots/welcome_page.png)
 
----
+## Screenshots
 
-## 📌 Overview
-
-Rahmani's Junkyard helps a salvage yard move online. Customers can browse available vehicles and parts, request to sell their own car, or contact the business directly. On the back end, staff manage every part of the operation — from vehicle intake to parts inventory, customer records, and payments — through a dedicated admin dashboard.
-
----
-
-## ✨ Features
-
-### Client Side
-- **Welcome / Home Page** — business overview and branding
-- **Inventory Search** — search vehicles by make and model, view available cars with images
-- **Sell My Car** — customers submit their vehicle info (name, phone, email, location, make/model/year) and upload at least 4 required photos (front, back, left, right)
-- **Contact Us** — contact form with business info and social links
-
-### Admin Side
-- **Secure Admin Login** with Forgot Password / Reset Password flow (email-based reset link)
-- **Dashboard** — sales and purchases overview with charts, total revenue tracking
-- **Add Vehicle** — intake form for new vehicles, including supplier info, part details, pricing, and inventory stock
-- **Vehicle Info** — full searchable table of vehicles and their associated parts, with edit/update/delete support
-- **Parts Management** — browse and search parts by name, condition, cost/sell price, and status
-- **Customer Management** — add, edit, and delete customer records
-- **Sales** — record new sales, track payment status (paid/pending), and view a transactions overview
-- **Supplier Management** — track supplier contact details tied to vehicle purchases
-- **Customer Contact Messages** — view and reply to messages submitted through the Contact Us form
-
----
-
-## 🛠️ Tech Stack
-
-> _Fill in with what you actually used — example below:_
-
-- **Frontend:** HTML, CSS, JavaScript (React, if used)
-- **Backend:** Node.js, Express
-- **Database:** MySQL / SQL Server
-- **Authentication:** Session/JWT-based login, email-based password reset
-- **Other Tools:** Git, GitHub
-
----
-
-## 📸 Screenshots
-
-| Welcome Page | Inventory Search | Sell My Car |
+| Inventory search | Car details | Sell My Car |
 |---|---|---|
-| ![Welcome](screenshots/welcome_page.png) | ![Inventory](screenshots/slider_page.png) | ![Sell My Car](screenshots/sell_mycar.png) |
+| ![Inventory](screenshots/Inventory.png) | ![Car details](screenshots/car_info.png) | ![Sell My Car](screenshots/sell_mycar.png) |
 
-| Admin Login | Admin Dashboard | Vehicle Info |
+| Admin dashboard | Add vehicle | Vehicle inventory |
 |---|---|---|
-| ![Admin Login](screenshots/Admin_login.png) | ![Dashboard](screenshots/Adming_dashboard.png) | ![Vehicle Info](screenshots/Vehicle_inventory.png) |
+| ![Dashboard](screenshots/Adming_dashboard.png) | ![Add vehicle](screenshots/add_vehicale.png) | ![Vehicle inventory](screenshots/Vehicle_inventory.png) |
 
-| Add Vehicle | Customers | Sales |
+| Customers | Sales and payments | Parts |
 |---|---|---|
-| ![Add Vehicle](screenshots/add_vehicale.png) | ![Customers](screenshots/customers.png) | ![Sales](screenshots/payments.png) |
+| ![Customers](screenshots/customers.png) | ![Payments](screenshots/payments.png) | ![Parts](screenshots/parts.png) |
 
-_Add or rename images as needed to match your `screenshots` folder._
+| Admin login | Forgot password | Contact us |
+|---|---|---|
+| ![Admin login](screenshots/Admin_login.png) | ![Forgot password](screenshots/forget_password.png) | ![Contact](screenshots/Contact_us.png) |
 
----
+## Features
 
-## 🚀 Getting Started
+**Customers**
+- Search vehicles by make and model, with photos and details
+- **Sell My Car:** send the car's details with 4 required photos (front, back, left, right)
+- Contact form that lands in the admin's inbox
 
-### Prerequisites
-- Node.js installed
-- A database (MySQL/SQL Server) set up and running
+**Admin**
+- Login with sessions (saved in the database), and password reset by email
+- Every admin API route checks the login on the server, not only in React
+- Dashboard with sales and purchase charts, total sales, paid and pending amounts
+- Add a vehicle with its supplier, parts, prices and stock in one form
+- Search, edit and delete vehicles and parts
+- Manage customers and suppliers
+- Record sales with paid and pending payments; every purchase and sale is also logged as a transaction
+- Read, mark and delete customer messages; review cars customers want to sell
 
-### Installation
+## Tech stack
+
+| Part | Used |
+|---|---|
+| Frontend | React |
+| Backend | Node.js, Express 5 |
+| Database | PostgreSQL (`pg`), Neon on the live site |
+| Auth | Passport (local strategy), express-session, bcrypt |
+| Files and email | Multer + Vercel Blob (photo uploads), Nodemailer (reset emails) |
+| Hosting | Vercel (React build + Express as a serverless function) |
+
+## Design
+
+### Use cases
+![Use case diagram](docs/use_cases.png)
+
+### Architecture
+![Architecture diagram](docs/architecture.png)
+
+### Database
+One car is bought from a supplier, split into many parts, and each part is stocked in inventory and sold to customers.
+
+![Database diagram](docs/database.png)
+
+### Buying a car and selling a part
+![Sale sequence diagram](docs/sale_flow.png)
+
+## Run it locally
+
+You need Node.js and PostgreSQL.
+
 ```bash
-# Clone the repository
-git clone https://github.com/Rohullah1122/rahmanis-website.git
+# 1. make an empty database
+psql -U postgres -c "CREATE DATABASE rahmanis;"
 
-# Move into the project folder
-cd rahmanis-website
-
-# Install dependencies
+# 2. API
+cd server
 npm install
+cp server.env.example server.env   # then fill in DATABASE_URL, SECRET and the ADMIN_ values
+npm run migrate                     # creates the tables, demo data and your first admin
+npm start                           # API on http://localhost:5000
 
-# Start the server
-npm start
+# 3. website (new terminal)
+cd rahmanis-website
+npm install
+npm start                           # http://localhost:3000, /api calls go to port 5000
 ```
 
-The app will run at `http://localhost:3000` (or your configured port).
+The admin panel is at `/admin`.
 
-### Environment Variables
-Create a `.env` file in the root directory with values such as:
+## Put it online (Vercel)
+
+1. Import this repo on Vercel. Framework preset: **Other** (`vercel.json` has the settings).
+2. **Storage** tab: add a **Neon** Postgres database (env prefix `DATABASE`, so you get `DATABASE_URL`) and a public **Blob** store (gives `BLOB_READ_WRITE_TOKEN`).
+3. **Settings → Environment Variables**: add `SECRET` (long random text), `ADMIN_USERNAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` (10+ characters), and `EMAIL_USER` / `EMAIL_PASS` for reset emails.
+4. Redeploy. Each deploy runs `server/migrate.js`, which creates the tables and the first admin.
+
+## Project structure
+
 ```
-DB_HOST=your_database_host
-DB_USER=your_database_user
-DB_PASSWORD=your_database_password
-DB_NAME=your_database_name
-EMAIL_USER=your_email@gmail.com
-EMAIL_PASS=your_app_password
-PORT=3000
+Rahmani-s-Group/
+├── rahmanis-website/        # React frontend (storefront + admin panel)
+│   └── src/
+│       ├── client_side/     # Main page, Inventory, Sell My Car, Contact
+│       ├── admin_side/      # Login, dashboard, vehicles, parts, sales, customers, messages
+│       └── utils/           # car makes and models, photo helpers
+├── server/
+│   ├── server.js            # Express API: auth, cars, parts, sales, customers, messages
+│   ├── migrate.js           # creates tables, demo data and the first admin
+│   └── server.env.example
+├── api/index.js             # runs the Express API on Vercel
+├── database/migrations/     # SQL: schema and demo data
+├── screenshots/             # screenshots used in this README
+├── docs/                    # diagrams (PNG + Mermaid source)
+└── vercel.json
 ```
 
----
+## Author
 
-## 📂 Project Structure
-```
-rahmanis-website/
-├── public/            # Static assets (CSS, JS, images)
-├── screenshots/        # Project screenshots for this README
-├── routes/             # Backend routes
-├── views/              # Frontend pages/templates
-├── server.js           # Entry point
-└── README.md
-```
-
----
-
-## 👤 Author
-
-**Rohullah Rahmani**
-- GitHub: [@Rohullah1122](https://github.com/Rohullah1122)
-- LinkedIn: _add your link here_
-
----
-
-## 📄 License
-
-This project is for educational/portfolio purposes.
+**Rohullah Hussaini** · [GitHub @Rohullah1122](https://github.com/Rohullah1122) · [Portfolio](https://rohullah-hussaini.vercel.app)

@@ -1,1 +1,5 @@
 /Admin_side
+node_modules/
+.vercel
+.env*
+!.env.example

@@ -1,0 +1,49 @@
+/* Tblcarinfo.css */
+
+/* Body wrapper */
+.divetblbody {
+    padding: 20px;
+    background-color: #f4f4f4 !important;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  
+  /* Search bar layout */
+  .search-bar {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+    align-items: center;
+  }
+  
+  /* Input styling */
+  .search-input .MuiInputBase-root {
+    background-color: white;
+    border-radius: 6px;
+  }
+  
+  /* Button styling */
+  .search-button {
+    text-transform: none;
+    background-color: #1976d2;
+  }
+  
+  .search-button:hover {
+    background-color: #1565c0;
+  }
+  
+  /* Table row hover */
+  .MuiTableRow-root:hover {
+    background-color: #e3f2fd !important;
+    cursor: pointer;
+  }
+  
+  /* Dialog content styling */
+  .MuiDialogContent-root {
+    background-color: #fafafa;
+  }
+  
+  /* Input fields in dialog */
+  .MuiDialogContent-root .MuiTextField-root {
+    flex: 1 1 300px;
+  }
+  

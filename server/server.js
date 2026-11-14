@@ -1,93 +1,117 @@
 import express from 'express';
-import sql from 'mssql';
+import pg from 'pg';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 import multer from 'multer';
 import path from 'path';
+import fs from 'fs';
 import bcrypt from 'bcrypt';
-import { stat } from 'fs';
-import  session  from 'express-session';
+import session from 'express-session';
 import passport from "passport";
 import cors from "cors";
-import { request } from 'http';
+import { fileURLToPath } from 'url';
 
 
-// Load environment variables
-dotenv.config({ path: './server.env' }); // adjust path if needed
+// Load environment variables (server.env next to this file, only used on your computer)
+const here = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(here, 'server.env') });
+
+const onVercel = !!process.env.VERCEL;
 
 // Initialize app
 const app = express();
+app.set('trust proxy', 1); // Vercel sits in front of the app
 app.use(express.json());
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
-// Multer storage config
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/");
-  },
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + path.extname(file.originalname);
-    cb(null, uniqueName);
-  },
+// uploaded photos on your computer go to server/uploads (on Vercel they go to Vercel Blob)
+const uploadsDir = path.join(here, "uploads");
+if (!onVercel && !fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
+app.use("/uploads", express.static(uploadsDir));
+
+// Multer keeps the file in memory, then saveFile() stores it
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024 }, // 4 MB per photo
 });
-const upload = multer({ storage });
+
+// Saves one uploaded photo and returns the path or URL to keep in the database
+const saveFile = async (file) => {
+  const name = Date.now() + "-" + crypto.randomBytes(3).toString("hex") + path.extname(file.originalname).toLowerCase();
+
+  if (process.env.BLOB_READ_WRITE_TOKEN) {
+    const { put } = await import("@vercel/blob");
+    const blob = await put(`rahmanis/${name}`, file.buffer, { access: "public", contentType: file.mimetype });
+    return blob.url;
+  }
+
+  fs.writeFileSync(path.join(uploadsDir, name), file.buffer);
+  return `/uploads/${name}`;
+};
 
 const saltRounds = 10;
 
-// DB config
-const dbConfig = {
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  server: 'localhost',
-  database: process.env.DB_DATABASE,
-  options: {
-    encrypt: false,
-    trustServerCertificate: true,
-  },
-};
+// DB config: one PostgreSQL connection string (Neon on Vercel, your own Postgres locally)
+pg.types.setTypeParser(1700, (v) => v === null ? null : parseFloat(v)); // NUMERIC -> number (like mssql Money)
+pg.types.setTypeParser(20, (v) => v === null ? null : parseInt(v, 10));  // COUNT(*) -> number
+pg.types.setTypeParser(1082, (v) => v);                                   // DATE stays 'YYYY-MM-DD'
+
+const local = /localhost|127\.0\.0\.1/.test(process.env.DATABASE_URL || "");
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: local ? false : { rejectUnauthorized: false },
+  max: onVercel ? 3 : 10,
+});
 
 
-
-const allowedOrigins = ["http://localhost:3000", "https://myfrontend.com"];
-
-// app.use(cors({
-//   origin: function (origin, callback) {
-//     if (!origin || allowedOrigins.includes(origin)) {
-//       callback(null, origin);
-//     } else {
-//       callback(new Error("Not allowed by CORS"));
-//     }
-//   },
-//   credentials: true,
-// }));
 
 app.use(cors({
-  origin: "http://localhost:3000",  // React frontend
+  origin: process.env.CLIENT_URL || "http://localhost:3000",  // React frontend
   credentials: true,                // Allow cookies/auth headers
 }));
 
 
 
+export { app, upload, pool };
 
 
 
-
-
-export { app, upload, dbConfig };
-
-
-// app.set('trust proxy', 1);
-
+// Sessions are saved in the "session" table, so a login keeps working on Vercel
+class PgStore extends session.Store {
+  get(sid, cb) {
+    pool.query("SELECT sess FROM session WHERE sid = $1 AND expire > now()", [sid])
+      .then((r) => cb(null, r.rows[0] ? r.rows[0].sess : null))
+      .catch(cb);
+  }
+  set(sid, sess, cb) {
+    const expire = new Date(Date.now() + (sess.cookie?.maxAge || 3600000));
+    pool.query(
+      `INSERT INTO session (sid, sess, expire) VALUES ($1, $2, $3)
+       ON CONFLICT (sid) DO UPDATE SET sess = $2, expire = $3`,
+      [sid, JSON.stringify(sess), expire])
+      .then(() => cb && cb(null))
+      .catch((e) => cb && cb(e));
+  }
+  destroy(sid, cb) {
+    pool.query("DELETE FROM session WHERE sid = $1", [sid])
+      .then(() => cb && cb(null))
+      .catch((e) => cb && cb(e));
+  }
+  touch(sid, sess, cb) {
+    this.set(sid, sess, cb);
+  }
+}
 
 app.use(
   session({
-    secret: process.env.SECRET,     // change to a strong secret
+    store: new PgStore(),
+    secret: process.env.SECRET || process.env.SESSION_SECRET || "change-this-secret",
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: false,  // ❌ set true only if using HTTPS
+      secure: onVercel,   // HTTPS only on Vercel
+      sameSite: "lax",
       maxAge: 1000 * 60 * 60, // 1 hour
     },
   })
@@ -105,11 +129,8 @@ passport.serializeUser((user, done) => {
 
 passport.deserializeUser(async (id, done) => {
   try {
-    let pool = await sql.connect(dbConfig);
-    let result = await pool.request()
-      .input('id', sql.Int, id)
-      .query('SELECT * FROM admin_users WHERE admin_id = @id');
-    done(null, result.recordset[0]); // attach user to req.user
+    const result = await pool.query('SELECT admin_id, username, email FROM admin_users WHERE admin_id = $1', [id]);
+    done(null, result.rows[0] || false); // attach user to req.user
   } catch (err) {
     done(err, null);
   }
@@ -117,11 +138,18 @@ passport.deserializeUser(async (id, done) => {
 
 
 
+app.get("/api/health", async (req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false });
+  }
+});
 
 
 app.get("/api/check-auth", (req, res) => {
   if (req.isAuthenticated()) {
-        console.log(req.isAuthenticated +"This is authentication");
     res.json({ authenticated: true });
   } else {
     res.json({ authenticated: false });
@@ -129,36 +157,18 @@ app.get("/api/check-auth", (req, res) => {
 });
 
 
+// only logged in admins can use the admin routes
 function ensureAuth(req, res, next) {
   if (req.isAuthenticated()) {
-    console.log(req.isAuthenticated +"This is authentication");
     return next();
   }
   res.status(401).json({ message: "Unauthorized" });
 }
 
 
-app.get("/Mainpage",(req, res) => {
-  if (req.isAuthenticated()) {
-  res.redirect('/Mainpage'); 
-  } else {
-    res.redirect("/login");
-  }
-});
-
-
-
-app.get('/api/Mainpage',(req,res) =>{
-
-    res.redirect("/Mainpage");
-
-})
-
-
-
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+if (!onVercel) app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 app.post('/api/login', async (req, res) => {
   const { adminName, adminPassword } = req.body;
@@ -168,17 +178,14 @@ app.post('/api/login', async (req, res) => {
   }
 
   try {
-    let pool = await sql.connect(dbConfig);
-    let result = await pool.request()
-      .input('username', sql.NVarChar, adminName.toLowerCase())
-      .query('SELECT * FROM admin_users WHERE LOWER(username) = @username');
+    const result = await pool.query('SELECT * FROM admin_users WHERE LOWER(username) = $1', [adminName.toLowerCase()]);
 
-    if (result.recordset.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(401).json({ message: 'Invalid username' });
     }
-    
 
-    const user = result.recordset[0];
+
+    const user = result.rows[0];
     const isMatch = await bcrypt.compare(adminPassword, user.password_hash);
 
     if (!isMatch) {
@@ -203,11 +210,10 @@ app.post('/api/login', async (req, res) => {
 
 
 
-app.get('/api/parts',async (req, res) => {
+app.get('/api/parts', ensureAuth, async (req, res) => {
   try {
-    let pool = await sql.connect(dbConfig);
-    let result = await pool.request().query('SELECT * FROM parts');
-    res.json(result.recordset);
+    const result = await pool.query('SELECT * FROM parts ORDER BY part_id');
+    res.json(result.rows);
   } catch (error) {
     console.error(error);
     res.status(500).send('Error fetching parts');
@@ -228,26 +234,18 @@ app.post('/api/forgot-password', async (req, res) => {
   const expires = new Date(Date.now() + 3600000); // 1 hour
 
   try {
-    let pool = await sql.connect(dbConfig);
-
     // 🔐 First, check if the email exists in admin_users
-    const userResult = await pool.request()
-      .input('email', sql.NVarChar, email)
-      .query('SELECT * FROM admin_users WHERE email = @email');
+    const userResult = await pool.query('SELECT * FROM admin_users WHERE LOWER(email) = LOWER($1)', [email]);
 
-    if (userResult.recordset.length === 0) {
+    if (userResult.rows.length === 0) {
       return res.status(404).json({ message: 'Email not found' });
     }
 
     // ✅ Email exists, insert the token into password_resets
-    await pool.request()
-      .input('email', sql.NVarChar, email)
-      .input('token', sql.NVarChar, token)
-      .input('expires', sql.DateTime, expires)
-      .query(`
-        INSERT INTO password_resets (email, token, expires_at)
-        VALUES (@email, @token, @expires)
-      `);
+    await pool.query(
+      'INSERT INTO password_resets (email, token, expires_at) VALUES ($1, $2, $3)',
+      [userResult.rows[0].email, token, expires]
+    );
 
     // Send email
     const transporter = nodemailer.createTransport({
@@ -258,11 +256,13 @@ app.post('/api/forgot-password', async (req, res) => {
       }
     });
 
-    const resetLink = `http://localhost:3000/reset-password/${token}`;
+    // the link goes back to the same site the request came from
+    const site = process.env.CLIENT_URL || `${req.protocol}://${req.get('host')}`;
+    const resetLink = `${site}/reset-password/${token}`;
 
     await transporter.sendMail({
       from: `"Support" <${process.env.EMAIL_USER}>`,
-      to: email,
+      to: userResult.rows[0].email,
       subject: 'Password Reset',
       html: `<p>Click below to reset your password:</p><a href="${resetLink}">${resetLink}</a>`
     });
@@ -285,31 +285,21 @@ app.post('/api/reset-password/:token', async (req, res) => {
   }
 
   try {
-    let pool = await sql.connect(dbConfig);
-
     // Check if token is valid and not expired
-    const result = await pool.request()
-      .input('token', sql.NVarChar, token)
-      .query(`SELECT * FROM password_resets WHERE token = @token AND expires_at > GETDATE()`);
+    const result = await pool.query('SELECT * FROM password_resets WHERE token = $1 AND expires_at > now()', [token]);
 
-    if (result.recordset.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(400).json({ message: 'Invalid or expired token' });
     }
 
-    const userEmail = result.recordset[0].email;
+    const userEmail = result.rows[0].email;
 
     // Update the password in admin_users
     const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
-    await pool.request()
-      .input('email', sql.NVarChar, userEmail)
-      .input('hashedPassword', sql.NVarChar, hashedPassword) // for now, plain — ideally hash it
-      .query(`UPDATE admin_users SET password_hash = @hashedPassword WHERE email = @email`);
-      console.log(hashedPassword);
+    await pool.query('UPDATE admin_users SET password_hash = $1 WHERE email = $2', [hashedPassword, userEmail]);
 
-    // Optionally, delete the token so it can’t be reused
-    await pool.request()
-      .input('token', sql.NVarChar, token)
-      .query(`DELETE FROM password_resets WHERE token = @token`);
+    // delete the token so it can’t be reused
+    await pool.query('DELETE FROM password_resets WHERE token = $1', [token]);
 
     res.json({ message: 'Password has been reset successfully' });
 
@@ -320,20 +310,18 @@ app.post('/api/reset-password/:token', async (req, res) => {
 });
 
 
-app.post('/api/sale', async (req, res) => {
+app.post('/api/sale', ensureAuth, async (req, res) => {
   try {
-    const pool = await sql.connect(dbConfig);
-
-    const result = await pool.request().query(`
-      SELECT 
-        FORMAT(s.sale_date, 'yyyy-MM') AS sale_month,
+    const result = await pool.query(`
+      SELECT
+        TO_CHAR(s.sale_date, 'YYYY-MM') AS sale_month,
         SUM(s.price_sold) AS total_sales
       FROM sales s
-      GROUP BY FORMAT(s.sale_date, 'yyyy-MM')
+      GROUP BY TO_CHAR(s.sale_date, 'YYYY-MM')
       ORDER BY sale_month
     `);
 
-    res.json(result.recordset);
+    res.json(result.rows);
   } catch (err) {
     console.error('Error fetching sales data:', err);
     res.status(500).json({ error: 'Server error' });
@@ -342,19 +330,18 @@ app.post('/api/sale', async (req, res) => {
 
 
 
-app.post('/api/purchased', async (req, res) => {
+app.post('/api/purchased', ensureAuth, async (req, res) => {
   try {
-    const pool = await sql.connect(dbConfig);
-    const result = await pool.request().query(`
-      SELECT 
-        FORMAT(purchase_date, 'yyyy-MM-dd') AS purchase_date,
+    const result = await pool.query(`
+      SELECT
+        TO_CHAR(purchase_date, 'YYYY-MM-DD') AS purchase_date,
         SUM(purchase_price) AS total_purchase
       FROM cars
-      GROUP BY FORMAT(purchase_date, 'yyyy-MM-dd')
-      ORDER BY purchase_date;
+      GROUP BY TO_CHAR(purchase_date, 'YYYY-MM-DD')
+      ORDER BY purchase_date
     `);
 
-    res.json(result.recordset);  // send data back in response
+    res.json(result.rows);  // send data back in response
   } catch (err) {
     console.error('Error fetching purchase data:', err);
     res.status(500).json({ error: 'Server error' });
@@ -364,7 +351,7 @@ app.post('/api/purchased', async (req, res) => {
 
 
 
-app.post('/api/insert-car', upload.single("carImage"), async (req, res) => {
+app.post('/api/insert-car', ensureAuth, upload.single("carImage"), async (req, res) => {
   const {
     supplierName,
     supplierPhone,
@@ -378,123 +365,79 @@ app.post('/api/insert-car', upload.single("carImage"), async (req, res) => {
     purchasePrice,
     condition,
     costPrice,
-    sellingPrices,
     parts,
     status,
     quantity,
     inventoryStock
   } = req.body;
 
-  // uploaded image file info
-  const imagePath = req.file ? `/uploads/${req.file.filename}` : null;
+  const client = await pool.connect();
 
   try {
-    const pool = await sql.connect(dbConfig);
-    const transaction = new sql.Transaction(pool);
-    await transaction.begin();
+    // uploaded image file info
+    const imagePath = req.file ? await saveFile(req.file) : null;
 
-    // Supplier insert (same as before)
-    const supplierRequest = new sql.Request(transaction);
-    const supplierResult = await supplierRequest
-      .input('name', sql.NVarChar, supplierName)
-      .input('phone', sql.NVarChar, supplierPhone)
-      .input('email', sql.NVarChar, supplierEmail)
-      .input('address', sql.NVarChar, supplierAddress)
-      .query(`
-        INSERT INTO suppliers (name, phone, email, address)
-        OUTPUT INSERTED.supplier_id
-        VALUES (@name, @phone, @email, @address)
-      `);
+    await client.query('BEGIN');
 
-    const supplierId = supplierResult.recordset[0].supplier_id;
+    // Supplier insert
+    const supplierResult = await client.query(
+      `INSERT INTO suppliers (name, phone, email, address)
+       VALUES ($1, $2, $3, $4) RETURNING supplier_id`,
+      [supplierName, supplierPhone, supplierEmail, supplierAddress]
+    );
+    const supplierId = supplierResult.rows[0].supplier_id;
 
     // Car insert WITH image_path
-    const carRequest = new sql.Request(transaction);
-    const carResult = await carRequest
-      .input('make', sql.NVarChar, make)
-      .input('model', sql.NVarChar, model)
-      .input('year', sql.Int, year)
-      .input('vin_number', sql.NVarChar, vinNumber)
-      .input('purchaseDate', sql.DateTime, new Date(purchaseDate))
-      .input('purchasePrice', sql.Money, parseFloat(purchasePrice))
-      .input('condition', sql.NVarChar, condition)
-      .input('costPrice', sql.Money, parseFloat(costPrice))
-      .input('status', sql.NVarChar, status)
-      .input('quantity', sql.Int, quantity)
-      .input('stock', sql.NVarChar, inventoryStock)
-      .input('supplierId', sql.Int, supplierId)
-      .input('imagePath', sql.NVarChar, imagePath)
-      .query(`
-        INSERT INTO cars (make, model, year, vin_number, purchase_price, purchase_date, supplier_id, image_path)
-        OUTPUT INSERTED.car_id
-        VALUES (@make, @model, @year, @vin_number, @purchasePrice, @purchaseDate, @supplierId, @imagePath)
-      `);
+    const carResult = await client.query(
+      `INSERT INTO cars (make, model, year, vin_number, purchase_price, purchase_date, supplier_id, image_path)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING car_id`,
+      [make, model, parseInt(year, 10) || null, vinNumber, parseFloat(purchasePrice) || 0, purchaseDate || null, supplierId, imagePath]
+    );
+    const carId = carResult.rows[0].car_id;
 
-    const carId = carResult.recordset[0].car_id;
+    // Insert parts + inventory
+    for (let part of JSON.parse(parts || "[]")) {
+      const partResult = await client.query(
+        `INSERT INTO parts (car_id, part_name, condition, cost_price, selling_price, status)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING part_id`,
+        [carId, part.name, condition, parseFloat(costPrice) || 0, parseFloat(part.price) || 0, status]
+      );
+      const partId = partResult.rows[0].part_id;
 
-    // Insert parts + inventory (same as your current code)
-    for (let part of JSON.parse(parts)) {
-      const partRequest = new sql.Request(transaction);
-      const partResult = await partRequest
-        .input('carId', sql.Int, carId)
-        .input('partName', sql.NVarChar, part.name)
-        .input('condition', sql.NVarChar, condition)
-        .input('costPrice', sql.Money, parseFloat(costPrice))
-        .input('sellingPrice', sql.Money, parseFloat(part.price))
-        .input('status', sql.NVarChar, status)
-        .query(`
-          INSERT INTO parts (car_id, part_name, condition, cost_price, selling_price, status)
-          OUTPUT INSERTED.part_id
-          VALUES (@carId, @partName, @condition, @costPrice, @sellingPrice, @status)
-        `);
-
-      const partId = partResult.recordset[0].part_id;
-
-      const inventoryRequest = new sql.Request(transaction);
-      await inventoryRequest
-        .input('partId', sql.Int, partId)
-        .input('quantity', sql.Int, quantity)
-        .input('status', sql.NVarChar, inventoryStock)
-        .query(`
-          INSERT INTO inventory (part_id, quantity, status)
-          VALUES (@partId, @quantity, @status)
-        `);
-
+      await client.query(
+        'INSERT INTO inventory (part_id, quantity, status) VALUES ($1, $2, $3)',
+        [partId, parseInt(quantity, 10) || 0, inventoryStock]
+      );
     }
 
     // Insert into transactions (AFTER car insert, AFTER parts loop)
-const totalAmount = parseFloat(purchasePrice) + parseFloat(costPrice);
-const description = `I bought ${make} ${model} for ${totalAmount}`;
+    const totalAmount = (parseFloat(purchasePrice) || 0) + (parseFloat(costPrice) || 0);
+    const description = `I bought ${make} ${model} for ${totalAmount}`;
 
-const txRequest = new sql.Request(transaction);
-await txRequest
-  .input('type', sql.NVarChar, "Purchase")
-  .input('referenceId', sql.Int, carId)
-  .input('amount', sql.Money, totalAmount)
-  .input('transactionDate', sql.DateTime, new Date()) // use server timestamp, not purchaseDate
-  .input('description', sql.NVarChar, description)
-  .query(`
-    INSERT INTO transactions (type, reference_id, amount, transaction_date, description)
-    VALUES (@type, @referenceId, @amount, @transactionDate, @description)
-  `);
+    await client.query(
+      `INSERT INTO transactions (type, reference_id, amount, transaction_date, description)
+       VALUES ($1, $2, $3, now(), $4)`,
+      ["Purchase", carId, totalAmount, description]
+    );
 
-
-    await transaction.commit();
+    await client.query('COMMIT');
     res.status(200).json({ message: 'Car, image, parts, and inventory inserted successfully!' });
 
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Insert error:', err);
     res.status(500).json({ error: 'Insert failed. Check server log.' });
+  } finally {
+    client.release();
   }
 });
 
 
 
-app.get('/api/car-details', async (req, res) => {
+app.get('/api/car-details', ensureAuth, async (req, res) => {
   try {
-    const pool = await sql.connect(dbConfig);
-    const result = await pool.request().query(`
-      SELECT 
+    const result = await pool.query(`
+      SELECT
         c.car_id,
         c.make,
         c.model,
@@ -512,7 +455,7 @@ app.get('/api/car-details', async (req, res) => {
         s.address AS supplier_address,
 
         -- Part details
-        P.part_id,
+        p.part_id,
         p.part_name,
         p.condition AS part_condition,
         p.cost_price AS part_cost_price,
@@ -527,17 +470,17 @@ app.get('/api/car-details', async (req, res) => {
       JOIN suppliers s ON c.supplier_id = s.supplier_id
       LEFT JOIN parts p ON c.car_id = p.car_id
       LEFT JOIN inventory i ON p.part_id = i.part_id
-      ORDER BY c.car_id, p.part_id;
+      ORDER BY c.car_id, p.part_id
     `);
 
-    res.status(200).json(result.recordset);
+    res.status(200).json(result.rows);
   } catch (err) {
     console.error('Error fetching car details:', err);
     res.status(500).json({ error: 'Server error fetching car details' });
   }
 });
 
-app.put('/api/car-details/:carId', async (req, res) => {
+app.put('/api/car-details/:carId', ensureAuth, async (req, res) => {
   const { carId } = req.params;
   const {
     make, model, year, vin_number, purchase_price, purchase_date, image_path,
@@ -547,165 +490,97 @@ app.put('/api/car-details/:carId', async (req, res) => {
     inventory_quantity, inventory_status
   } = req.body;
 
-  console.log("This is part ID"+" "+part_id);
+  const client = await pool.connect();
 
   try {
-    const pool = await sql.connect(dbConfig);
-    const transaction = new sql.Transaction(pool);
-    await transaction.begin();
-    const request = new sql.Request(transaction);
+    await client.query('BEGIN');
 
     // Update cars table
-    await request
-      .input('car_id', sql.Int, carId)
-      .input('make', sql.VarChar, make)
-      .input('model', sql.VarChar, model)
-      .input('year', sql.Int, year)
-      .input('vin', sql.VarChar, vin_number)
-      .input('price', sql.Decimal(10, 2), purchase_price)
-      .input('pdate', sql.Date, purchase_date)
-      .input('img', sql.VarChar, image_path)
-      .query(`
-        UPDATE cars SET
-          make = @make,
-          model = @model,
-          year = @year,
-          vin_number = @vin,
-          purchase_price = @price,
-          purchase_date = @pdate,
-          image_path = @img
-        WHERE car_id = @car_id
-      `);
+    await client.query(
+      `UPDATE cars SET
+         make = $1, model = $2, year = $3, vin_number = $4,
+         purchase_price = $5, purchase_date = $6, image_path = $7
+       WHERE car_id = $8`,
+      [make, model, year, vin_number, purchase_price, purchase_date ? String(purchase_date).slice(0, 10) : null, image_path, carId]
+    );
 
     // Update supplier
-    await request
-      .input('sname', sql.VarChar, supplier_name)
-      .input('sphone', sql.VarChar, supplier_phone)
-      .input('semail', sql.VarChar, supplier_email)
-      .input('saddr', sql.VarChar, supplier_address)
-      .query(`
-        UPDATE suppliers SET
-          name = @sname,
-          phone = @sphone,
-          email = @semail,
-          address = @saddr
-        WHERE supplier_id = (
-          SELECT supplier_id FROM cars WHERE car_id = @car_id
-        )
-      `);
+    await client.query(
+      `UPDATE suppliers SET name = $1, phone = $2, email = $3, address = $4
+       WHERE supplier_id = (SELECT supplier_id FROM cars WHERE car_id = $5)`,
+      [supplier_name, supplier_phone, supplier_email, supplier_address, carId]
+    );
 
-    // Update part by part_id (only if part_id provided)
-       // ✅ Update part
-       if (part_id) {
-        const partRequest = new sql.Request(transaction);
-        await partRequest
-          .input('part_id', sql.Int, part_id)
-          .input('pname', sql.VarChar, part_name)
-          .input('pcond', sql.VarChar, part_condition)
-          .input('pcost', sql.Decimal(10, 2), part_cost_price)
-          .input('psell', sql.Decimal(10, 2), part_selling_price)
-          .input('pstatus', sql.VarChar, part_status)
-          .query(`
-            UPDATE parts SET
-              part_name = @pname,
-              condition = @pcond,
-              cost_price = @pcost,
-              selling_price = @psell,
-              status = @pstatus
-            WHERE part_id = @part_id
-          `);
-      }
-  
-      // ✅ Update inventory
-      if (part_id) {
-        const invRequest = new sql.Request(transaction);
-        await invRequest
-          .input('part_id', sql.Int, part_id)
-          .input('inv_qty', sql.Int, inventory_quantity)
-          .input('inv_status', sql.VarChar, inventory_status)
-          .query(`
-            UPDATE inventory SET
-              quantity = @inv_qty,
-              status = @inv_status
-            WHERE part_id = @part_id
-          `);
-      }
-  
+    // ✅ Update part and its inventory (only if part_id provided)
+    if (part_id) {
+      await client.query(
+        `UPDATE parts SET part_name = $1, condition = $2, cost_price = $3, selling_price = $4, status = $5
+         WHERE part_id = $6`,
+        [part_name, part_condition, part_cost_price, part_selling_price, part_status, part_id]
+      );
 
-    await transaction.commit();
-    res.status(200).json({ message: 'Car details updated successfully' });
-  } catch (err) {
-    console.error('Update error:', err);
-    res.status(500).json({ error: 'Error updating car details' });
-  }
-});
-
-
-
-app.delete('/api/car-details/:carId/:partId', async (req, res) => {
-  const { carId, partId } = req.params;
-
-  try {
-    const pool = await sql.connect(dbConfig);
-    const transaction = new sql.Transaction(pool);
-    await transaction.begin();
-
-    // Use separate Request objects to avoid duplicate parameter issues
-    // 1. Delete from sales
-    const salesRequest = new sql.Request(transaction);
-    await salesRequest
-      .input('part_id', sql.Int, partId)
-      .query('DELETE FROM sales WHERE part_id = @part_id');
-
-    // 2. Delete from inventory
-    const invRequest = new sql.Request(transaction);
-    await invRequest
-      .input('part_id', sql.Int, partId)
-      .query('DELETE FROM inventory WHERE part_id = @part_id');
-
-    // 3. Delete from parts
-    const partRequest = new sql.Request(transaction);
-    await partRequest
-      .input('part_id', sql.Int, partId)
-      .query('DELETE FROM parts WHERE part_id = @part_id');
-
-    // 4. Check if any parts remain for this car
-    const carCheckRequest = new sql.Request(transaction);
-    const partsCountResult = await carCheckRequest
-      .input('car_id', sql.Int, carId)
-      .query('SELECT COUNT(*) as partsCount FROM parts WHERE car_id = @car_id');
-
-    const partsCount = partsCountResult.recordset[0].partsCount;
-
-    if (partsCount === 0) {
-      // 5. Delete car if no parts remain
-      const carRequest = new sql.Request(transaction);
-      await carRequest
-        .input('car_id', sql.Int, carId)
-        .query('DELETE FROM cars WHERE car_id = @car_id');
+      await client.query(
+        'UPDATE inventory SET quantity = $1, status = $2 WHERE part_id = $3',
+        [inventory_quantity, inventory_status, part_id]
+      );
     }
 
-    await transaction.commit();
-    res.status(200).json({ message: 'Deleted part, related sales, inventory, and car if no parts remain.' });
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Car details updated successfully' });
   } catch (err) {
-    console.error('Deletion error:', err);
-    res.status(500).json({ error: 'Error deleting car details. Check foreign key constraints.' });
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Update error:', err);
+    res.status(500).json({ error: 'Error updating car details' });
+  } finally {
+    client.release();
   }
 });
 
 
-app.get('/api/suppliers-with-vehicle-count', async (req, res) => {
-  try {
-    const pool = await sql.connect(dbConfig);
 
-    const result = await pool.request().query(`
+app.delete('/api/car-details/:carId/:partId', ensureAuth, async (req, res) => {
+  const { carId, partId } = req.params;
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // 1. Delete from sales  2. inventory  3. parts
+    await client.query('DELETE FROM sales WHERE part_id = $1', [partId]);
+    await client.query('DELETE FROM inventory WHERE part_id = $1', [partId]);
+    await client.query('DELETE FROM parts WHERE part_id = $1', [partId]);
+
+    // 4. Check if any parts remain for this car
+    const partsCountResult = await client.query('SELECT COUNT(*) AS parts_count FROM parts WHERE car_id = $1', [carId]);
+
+    if (partsCountResult.rows[0].parts_count === 0) {
+      // 5. Delete car if no parts remain
+      await client.query('DELETE FROM cars WHERE car_id = $1', [carId]);
+    }
+
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Deleted part, related sales, inventory, and car if no parts remain.' });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Deletion error:', err);
+    res.status(500).json({ error: 'Error deleting car details. Check foreign key constraints.' });
+  } finally {
+    client.release();
+  }
+});
+
+
+app.get('/api/suppliers-with-vehicle-count', ensureAuth, async (req, res) => {
+  try {
+    const result = await pool.query(`
       SELECT s.supplier_id, s.name, COUNT(c.car_id) AS total_vehicles
       FROM suppliers s
       LEFT JOIN cars c ON s.supplier_id = c.supplier_id
       GROUP BY s.supplier_id, s.name
+      ORDER BY s.supplier_id
     `);
 
-    res.json(result.recordset); // send only array to frontend
+    res.json(result.rows); // send only array to frontend
   } catch (error) {
     console.error('Database error:', error);
     res.status(500).json({ error: 'Internal Server Error' });
@@ -713,75 +588,44 @@ app.get('/api/suppliers-with-vehicle-count', async (req, res) => {
 });
 
 
-app.get('/api/vehicals',async (req,res) =>{
-
-  try{
-    const pool = await sql.connect(dbConfig);
-    const result = await pool.request().query('select * from cars');
-    res.json(result.recordset);
-  }catch(error){
-    console.error('Database error:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-
-app.post('/api/Vehicale_inseration', upload.array("photos"),async (req, res) => {
+// public: the inventory page shows these cars
+app.get('/api/vehicals', async (req, res) => {
   try {
-    const { name, phone, location, make, model, year } = req.body;
-
-    
-    const photos = req.files; 
-    const carinfo = { name, phone, location, make, model, year,photos};
-    console.log("Received:", carinfo);
-
-    res.json({ success: true, message: "Car info received", data: carinfo });
+    const result = await pool.query('SELECT * FROM cars ORDER BY car_id');
+    res.json(result.rows);
   } catch (error) {
-    console.error("Server error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error('Database error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
 
 
-app.get("/api/parts/:id", async (req, res) => {
+app.get("/api/parts/:id", ensureAuth, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const pool = await sql.connect(dbConfig);
-    const result = await pool
-      .request()
-      .input("id", sql.Int, id) // safe parameter binding
-      .query("SELECT * FROM parts WHERE part_id = @id");
+    const result = await pool.query("SELECT * FROM parts WHERE part_id = $1", [id]);
 
-    if (result.recordset.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: "Part not found" });
     }
 
-    res.json(result.recordset[0]); // send single part
+    res.json(result.rows[0]); // send single part
   } catch (error) {
     console.error("Database error:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
-app.post('/api/customerinseration', async (req, res) => {
+app.post('/api/customerinseration', ensureAuth, async (req, res) => {
   try {
     const { first_name, last_name, email, phone } = req.body;
 
-    console.log(first_name,last_name,email,phone);
-
-    const pool = await sql.connect(dbConfig);
-
-    const result = await pool.request()
-      .input("name", sql.VarChar, first_name)
-      .input("lname", sql.VarChar, last_name)
-      .input("customeremail", sql.VarChar, email)
-      .input("customerphone", sql.VarChar, phone)
-      .query(`
-        INSERT INTO customers (First_name, Last_name, email, phone)
-        VALUES (@name, @lname, @customeremail, @customerphone)
-      `);
+    await pool.query(
+      'INSERT INTO customers ("First_name", "Last_name", email, phone) VALUES ($1, $2, $3, $4)',
+      [first_name, last_name, email, phone]
+    );
 
     res.json({ message: "Customer inserted successfully" });
   } catch (error) {
@@ -791,15 +635,10 @@ app.post('/api/customerinseration', async (req, res) => {
 });
 
 
-app.get('/api/selectcustomer', async (req, res) => {
+app.get('/api/selectcustomer', ensureAuth, async (req, res) => {
   try {
-    // const { name, lname, customerphone, customeremail } = req.body;
-
-    const pool = await sql.connect(dbConfig);
-
-    const result = await pool.request().query("select * from customers");
-    
-    res.json(result.recordset); 
+    const result = await pool.query("SELECT * FROM customers ORDER BY customer_id");
+    res.json(result.rows);
   } catch (error) {
     console.error("Database error:", error);
     res.status(500).json({ error: "Internal Server Error" });
@@ -807,33 +646,22 @@ app.get('/api/selectcustomer', async (req, res) => {
 });
 
 
-app.put('/api/selectcustomerupdate/:customer_id', async (req, res) => {
+app.put('/api/selectcustomerupdate/:customer_id', ensureAuth, async (req, res) => {
   try {
-    const { customer_id, first_name, last_name, email, phone  } = req.body;
+    const customer_id = req.body.customer_id || req.params.customer_id;
+    const { first_name, last_name, email, phone } = req.body;
 
     if (!customer_id) {
       return res.status(400).json({ error: "Customer ID is required" });
     }
 
-    const pool = await sql.connect(dbConfig);
-// (First_name, Last_name, email, phone)
-    const result = await pool.request()
-      .input("customer_id", sql.Int, customer_id)
-      .input("First_name", sql.NVarChar, first_name)
-      .input("Last_name", sql.NVarChar, last_name)
-      .input("email", sql.NVarChar, email)
-      .input("phone", sql.NVarChar, phone)
-      .query(`
-        UPDATE customers
-        SET 
-          First_name = @First_name,
-          Last_name = @Last_name,
-             email = @email,
-          phone = @phone
-         WHERE customer_id = @customer_id
-      `);
+    const result = await pool.query(
+      `UPDATE customers SET "First_name" = $1, "Last_name" = $2, email = $3, phone = $4
+       WHERE customer_id = $5`,
+      [first_name, last_name, email, phone, customer_id]
+    );
 
-    if (result.rowsAffected[0] === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ message: "Customer not found" });
     }
 
@@ -844,21 +672,17 @@ app.put('/api/selectcustomerupdate/:customer_id', async (req, res) => {
   }
 });
 
-app.delete('/api/delete/:customer_id', async (req, res) => {
+app.delete('/api/delete/:customer_id', ensureAuth, async (req, res) => {
   try {
-     const { customer_id } = req.params; // ✅ use params, not body
+    const { customer_id } = req.params; // ✅ use params, not body
 
     if (!customer_id) {
       return res.status(400).json({ error: "Customer ID is required" });
     }
 
-    const pool = await sql.connect(dbConfig);
+    const result = await pool.query("DELETE FROM customers WHERE customer_id = $1", [customer_id]);
 
-    const result = await pool.request()
-      .input("customer_id", sql.Int, customer_id) // ✅ parameterized query
-      .query("DELETE FROM customers WHERE customer_id = @customer_id");
-
-    if (result.rowsAffected[0] === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: "Customer not found" });
     }
 
@@ -869,11 +693,11 @@ app.delete('/api/delete/:customer_id', async (req, res) => {
   }
 });
 
-app.post("/api/salesinseration", async (req, res) => {
+app.post("/api/salesinseration", ensureAuth, async (req, res) => {
   const {
     customer_id,
     part_id,
-    car_id, // remove if not needed
+    car_id,
     sale_date,
     quantity,
     price_sold,
@@ -883,80 +707,55 @@ app.post("/api/salesinseration", async (req, res) => {
     status,
   } = req.body;
 
-  let pool, transaction;
+  const client = await pool.connect();
 
   try {
-    pool = await sql.connect(dbConfig);
-    transaction = new sql.Transaction(pool);
-
-    await transaction.begin();
+    await client.query('BEGIN');
 
     // 1. Insert into sales
-    const salesRequest = new sql.Request(transaction);
-    await salesRequest
-      .input("customer_id", sql.Int, customer_id)
-      .input("part_id", sql.Int, part_id)
-      .input("sale_date", sql.Date, sale_date)
-      .input("price_sold", sql.Decimal(10, 2), price_sold)
-      .input("payment_id", sql.Int, payment_method || null)
-      .input("quantity", sql.Int, quantity)
-      .input("amount_paid", sql.Decimal(10, 2), amount_paid)
-      .input("amount_pending", sql.Decimal(10, 2), pending)
-      .input("status", sql.VarChar, status)
-      .query(`
-        INSERT INTO sales 
-          (customer_id, part_id, sale_date, price_sold, payment_id, quantity, Amount_paid, Amount_pending, status)
-        VALUES 
-          (@customer_id, @part_id, @sale_date, @price_sold, @payment_id, @quantity, @amount_paid, @amount_pending, @status)
-      `);
+    await client.query(
+      `INSERT INTO sales
+         (customer_id, part_id, sale_date, price_sold, payment_id, quantity, "Amount_paid", "Amount_pending", status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [customer_id, part_id, sale_date, price_sold, payment_method || null, quantity, amount_paid, pending, status]
+    );
 
     // 2. Insert into transactions
-    const transRequest = new sql.Request(transaction);
-    await transRequest
-      .input("type", sql.NVarChar, "Sale")
-      .input("reference_id", sql.Int, car_id || null) // change if reference_id ≠ car_id
-      .input("amount", sql.Decimal(10, 2), price_sold)
-      .input("transaction_date", sql.Date, sale_date)
-      .input(
-        "description",
-        sql.NVarChar,
-        `I sold ${quantity} part(s) with id ${part_id}`
-      )
-      .query(`
-        INSERT INTO transactions (type, reference_id, amount, transaction_date, description) 
-        VALUES (@type, @reference_id, @amount, @transaction_date, @description)
-      `);
+    await client.query(
+      `INSERT INTO transactions (type, reference_id, amount, transaction_date, description)
+       VALUES ($1, $2, $3, $4, $5)`,
+      ["Sale", car_id || null, price_sold, sale_date, `I sold ${quantity} part(s) with id ${part_id}`]
+    );
 
     // 3. Update inventory
-    const inventoryRequest = new sql.Request(transaction);
-    await inventoryRequest
-      .input("part_id", sql.Int, part_id)
-      .input("quantity", sql.Int, quantity)
-      .query(`
-        UPDATE inventory
-        SET quantity = quantity - @quantity,
-            status = CASE WHEN quantity - @quantity <= 0 THEN 'out of stock' ELSE 'available' END
-        WHERE part_id = @part_id
-      `);
+    await client.query(
+      `UPDATE inventory
+       SET quantity = quantity - $1,
+           status = CASE WHEN quantity - $1 <= 0 THEN 'out of stock' ELSE 'available' END
+       WHERE part_id = $2`,
+      [quantity, part_id]
+    );
 
     // Commit if all succeed
-    await transaction.commit();
+    await client.query('COMMIT');
     res.json({ message: "Transaction saved successfully and inventory updated" });
   } catch (error) {
-    if (transaction) await transaction.rollback();
+    await client.query('ROLLBACK').catch(() => {});
     console.error("Database error:", error);
     res.status(500).json({ error: "Internal Server Error" });
+  } finally {
+    client.release();
   }
 });
 
 
 
-app.put("/api/salesupdate/:sale_id", async (req, res) => {
+app.put("/api/salesupdate/:sale_id", ensureAuth, async (req, res) => {
   const { sale_id } = req.params;
   const {
     customer_id,
     part_id,
-    car_id, // optional, depending on your reference
+    car_id,
     sale_date,
     quantity,
     price_sold,
@@ -966,199 +765,123 @@ app.put("/api/salesupdate/:sale_id", async (req, res) => {
     status,
   } = req.body;
 
-  let pool, transaction;
+  const client = await pool.connect();
 
-  //work on this method
   try {
-
-    console.log(customer_id,part_id,car_id,sale_date,quantity,price_sold,amount_paid,pending,payment_method,status);
-    pool = await sql.connect(dbConfig);
-    transaction = new sql.Transaction(pool);
-
-    await transaction.begin();
+    await client.query('BEGIN');
 
     // 1️⃣ Get the current sale to adjust inventory
-    const currentSaleRequest = new sql.Request(transaction);
-    const currentSale = await currentSaleRequest
-      .input("sale_id", sql.Int, sale_id)
-      .query("SELECT part_id, quantity FROM sales WHERE sale_id = @sale_id");
+    const currentSale = await client.query("SELECT part_id, quantity FROM sales WHERE sale_id = $1", [sale_id]);
 
-    if (currentSale.recordset.length === 0) {
+    if (currentSale.rows.length === 0) {
       throw new Error("Sale not found");
     }
 
-    const oldQuantity = currentSale.recordset[0].quantity;
-    const oldPartId = currentSale.recordset[0].part_id;
+    const oldQuantity = currentSale.rows[0].quantity;
+    const oldPartId = currentSale.rows[0].part_id;
 
     // 2️⃣ Update sales
-    const salesRequest = new sql.Request(transaction);
-    await salesRequest
-      .input("sale_id", sql.Int, sale_id)
-      .input("customer_id", sql.Int, customer_id)
-      .input("part_id", sql.Int, part_id)
-      .input("sale_date", sql.Date, sale_date)
-      .input("price_sold", sql.Decimal(10, 2), price_sold)
-      .input("payment_id", sql.Int, payment_method || null)
-      .input("quantity", sql.Int, quantity)
-      .input("amount_paid", sql.Decimal(10, 2), amount_paid)
-      .input("amount_pending", sql.Decimal(10, 2), pending)
-      .input("status", sql.VarChar, status)
-      .query(`
-        UPDATE sales
-        SET customer_id = @customer_id,
-            part_id = @part_id,
-            sale_date = @sale_date,
-            price_sold = @price_sold,
-            payment_id = @payment_id,
-            quantity = @quantity,
-            Amount_paid = @amount_paid,
-            Amount_pending = @amount_pending,
-            status = @status
-        WHERE sale_id = @sale_id
-      `);
+    await client.query(
+      `UPDATE sales
+       SET customer_id = $1, part_id = $2, sale_date = $3, price_sold = $4, payment_id = $5,
+           quantity = $6, "Amount_paid" = $7, "Amount_pending" = $8, status = $9
+       WHERE sale_id = $10`,
+      [customer_id, part_id, sale_date, price_sold, payment_method || null, quantity, amount_paid, pending, status, sale_id]
+    );
 
     // 3️⃣ Update transaction
-    const transRequest = new sql.Request(transaction);
-    await transRequest
-      .input("sale_id", sql.Int, sale_id)
-      .input("type", sql.NVarChar, "Sale")
-      .input("reference_id", sql.Int, car_id || null)
-      .input("amount", sql.Decimal(10, 2), price_sold)
-      .input("transaction_date", sql.Date, sale_date)
-      .input(
-        "description",
-        sql.NVarChar,
-        `Updated sale: ${quantity} part(s) with id ${part_id}`
-      )
-      .query(`
-        UPDATE transactions
-        SET type = @type,
-            reference_id = @reference_id,
-            amount = @amount,
-            transaction_date = @transaction_date,
-            description = @description
-        WHERE reference_id = @sale_id AND type = 'Sale'
-      `);
+    await client.query(
+      `UPDATE transactions
+       SET type = $1, reference_id = $2, amount = $3, transaction_date = $4, description = $5
+       WHERE reference_id = $6 AND type = 'Sale'`,
+      ["Sale", car_id || null, price_sold, sale_date, `Updated sale: ${quantity} part(s) with id ${part_id}`, sale_id]
+    );
 
-    // 4️⃣ Adjust inventory
-    const inventoryRequest = new sql.Request(transaction);
+    // 4️⃣ Adjust inventory: give back the old quantity, then take the new one
+    await client.query(
+      `UPDATE inventory
+       SET quantity = quantity + $1,
+           status = CASE WHEN quantity + $1 <= 0 THEN 'out of stock' ELSE 'available' END
+       WHERE part_id = $2`,
+      [oldQuantity, oldPartId]
+    );
 
-    // If part_id changed, adjust old inventory
-    if (oldPartId !== part_id) {
-      // Restore old part quantity
-      await inventoryRequest
-        .input("old_part_id", sql.Int, oldPartId)
-        .input("old_quantity", sql.Int, oldQuantity)
-        .query(`
-          UPDATE inventory
-          SET quantity = quantity + @old_quantity,
-              status = CASE WHEN quantity + @old_quantity <= 0 THEN 'out of stock' ELSE 'available' END
-          WHERE part_id = @old_part_id
-        `);
-    }
-
-    // Update current part quantity
-    await inventoryRequest
-      .input("part_id", sql.Int, part_id)
-      .input("quantity", sql.Int, quantity)
-      .query(`
-        UPDATE inventory
-        SET quantity = quantity - @quantity,
-            status = CASE WHEN quantity - @quantity <= 0 THEN 'out of stock' ELSE 'available' END
-        WHERE part_id = @part_id
-      `);
+    await client.query(
+      `UPDATE inventory
+       SET quantity = quantity - $1,
+           status = CASE WHEN quantity - $1 <= 0 THEN 'out of stock' ELSE 'available' END
+       WHERE part_id = $2`,
+      [quantity, part_id]
+    );
 
     // 5️⃣ Commit transaction
-    await transaction.commit();
+    await client.query('COMMIT');
     res.json({ message: "Sale updated successfully and inventory adjusted" });
   } catch (error) {
-    if (transaction) await transaction.rollback();
+    await client.query('ROLLBACK').catch(() => {});
     console.error("Database error:", error);
     res.status(500).json({ error: "Internal Server Error" });
+  } finally {
+    client.release();
   }
 });
 
 
 
 
-app.get("/api/getsales", async (req, res) => {
-
-  try{
-
-
-      const pool = await sql.connect(dbConfig);
-
-    const result = await pool.request().query("select * from sales");
-  
-
-  res.json(result.recordset); 
-
-  } catch (error) {
-    console.error("Database error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-
-
-
-
-app.get("/api/getpayment", async (req, res) => {
-
-  try{
-
-
-      const pool = await sql.connect(dbConfig);
-
-    const result = await pool.request().query("select * from payments");
-  
-
-  res.json(result.recordset); 
-
-  } catch (error) {
-    console.error("Database error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-
-app.get("/api/getcalcluation", async (req, res) => {
+app.get("/api/getsales", ensureAuth, async (req, res) => {
   try {
-    const pool = await sql.connect(dbConfig);
+    const result = await pool.query("SELECT * FROM sales ORDER BY sale_id");
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Database error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
 
-    const result = await pool.request().query(`
-      SELECT 
+
+
+
+
+app.get("/api/getpayment", ensureAuth, async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM payments ORDER BY payment_id");
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Database error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+
+app.get("/api/getcalcluation", ensureAuth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
         SUM(price_sold * quantity) AS total_sales,
-        SUM(Amount_pending) AS total_pending,
-        SUM(Amount_paid) AS amount_paid
+        SUM("Amount_pending") AS total_pending,
+        SUM("Amount_paid") AS amount_paid
       FROM sales
     `);
 
-    res.json(result.recordset); 
+    res.json(result.rows);
   } catch (error) {
     console.error("Database error:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
-  //work on pending total sale and amount paid
 });
 
 
 
-app.put("/api/inventoryupdate/:inventory_id", async (req, res) => {
+app.put("/api/inventoryupdate/:inventory_id", ensureAuth, async (req, res) => {
   const { quantity, status } = req.body;
   const { inventory_id } = req.params;
 
   try {
-    const pool = await sql.connect(dbConfig);
-    await pool.request()
-      .input("inventory_id", sql.Int, inventory_id)
-      .input("quantity", sql.Int, quantity)
-      .input("status", sql.VarChar, status)
-      .query(`
-        UPDATE inventory
-        SET quantity = @quantity, status = @status
-        WHERE inventory_id = @inventory_id
-      `);
+    await pool.query(
+      'UPDATE inventory SET quantity = $1, status = $2 WHERE inventory_id = $3',
+      [quantity, status, inventory_id]
+    );
 
     res.json({ message: "Inventory updated successfully" });
   } catch (error) {
@@ -1168,26 +891,12 @@ app.put("/api/inventoryupdate/:inventory_id", async (req, res) => {
 });
 
 
-app.get("/api/getinventory/:part_id", async (req, res) => {
+app.get("/api/getinventory/:part_id", ensureAuth, async (req, res) => {
   try {
     const { part_id } = req.params; // <-- comes from URL, e.g. /api/getinventory/5
 
-    if(part_id !=null){
-     console.log("this is the part_ID" + part_id); // problem when i am sending part_id its only one 2 and three thats why its not working
-            const pool = await sql.connect(dbConfig);
-      const result = await pool
-      .request()
-      .input("part_id", sql.Int, part_id) // bind the param safely
-      .query("SELECT * FROM inventory WHERE part_id = @part_id");
-
-    res.json(result.recordset); 
-
-        console.log(part_id);
-      
-    }else{
-      console.log("part id is not defined");
-    }
-
+    const result = await pool.query("SELECT * FROM inventory WHERE part_id = $1", [part_id]);
+    res.json(result.rows);
 
   } catch (error) {
     console.error("Database error:", error);
@@ -1195,12 +904,10 @@ app.get("/api/getinventory/:part_id", async (req, res) => {
   }
 });
 
-app.get("/api/SelectInventory", async (req, res) => {
+app.get("/api/SelectInventory", ensureAuth, async (req, res) => {
   try {
-    const pool = await sql.connect(dbConfig);
-
-    const result = await pool.request().query(`
-      SELECT 
+    const result = await pool.query(`
+      SELECT
           i.inventory_id,
           i.status,
           i.part_id,
@@ -1218,11 +925,10 @@ app.get("/api/SelectInventory", async (req, res) => {
       INNER JOIN parts p ON i.part_id = p.part_id
       INNER JOIN cars c ON p.car_id = c.car_id
       INNER JOIN suppliers s ON c.supplier_id = s.supplier_id
-      ORDER BY c.make, c.model, p.part_name;
+      ORDER BY c.make, c.model, p.part_name
     `);
 
-    res.json(result.recordset);
-
+    res.json(result.rows);
 
   } catch (error) {
     console.error("Database error:", error);
@@ -1234,62 +940,41 @@ app.get("/api/SelectInventory", async (req, res) => {
 
 
 
-app.get("/api/selectwebcars", async (req, res) => {
+app.get("/api/selectwebcars", ensureAuth, async (req, res) => {
   try {
-    const pool = await sql.connect(dbConfig);
-
-    // ✅ FIX: Call request() as a function
-    const result = await pool.request().query("SELECT * FROM web_cars");
-
-    console.log("✅ Cars fetched:", result.recordset.length);
-    res.json(result.recordset);
+    const result = await pool.query("SELECT * FROM web_cars ORDER BY car_id DESC");
+    res.json(result.rows);
   } catch (error) {
     console.error("❌ Database error:", error);
-    res.status(500).json({ error: "Internal Server Error", details: error.message });
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
 
 
+// public: "Sell My Car" form
 app.post("/api/insersellcar", upload.array("photos", 10), async (req, res) => {
   try {
-
-
-    const { name, phone, make, model, year,location,Email } = req.body;
+    const { name, phone, make, model, year, location, Email } = req.body;
 
     // Validate required fields
-    if (!name || !phone || !make || !model || !year ||!location || !Email) {
+    if (!name || !phone || !make || !model || !year || !location || !Email) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-  
+    // save every photo and keep the list of paths/URLs
+    const photos = [];
+    for (const file of req.files || []) {
+      photos.push(await saveFile(file));
+    }
 
-    const photos = req.files?.map(file => file.path) || [];
+    await pool.query(
+      `INSERT INTO web_cars (seller_name, phone, make, model, year, photos, location, email)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [name, phone, make, model, parseInt(year, 10) || null, JSON.stringify(photos), location, Email]
+    );
 
-
-    const pool = await sql.connect(dbConfig);
-
-  //  Insert query
-    const query = `
-      INSERT INTO web_cars (seller_name, phone, make, model, year, photos,location,email)
-      VALUES (@seller_name, @phone, @make, @model, @year, @photos,@location,@email)
-    `;
-
-    const request = pool.request();
-    request.input("seller_name", sql.VarChar, name);
-    request.input("phone", sql.VarChar, phone);
-    request.input("make", sql.VarChar, make);
-    request.input("model", sql.VarChar, model);
-    request.input("year", sql.Int, year);
-    request.input("photos", sql.NVarChar(sql.MAX), JSON.stringify(photos)); // store as JSON string
-    request.input("location",sql.VarChar,location);
-    request.input("email",sql.VarChar,Email);
-
-   
-
-    await request.query(query);
     res.json({ message: "✅ Car inserted successfully!" });
-
 
   } catch (err) {
     console.error("❌ Error in /api/insersellcar:", err);
@@ -1300,20 +985,14 @@ app.post("/api/insersellcar", upload.array("photos", 10), async (req, res) => {
 
 
 
-app.delete("/api/web_vehcale_delete/:car_id", async (req, res) => {
+app.delete("/api/web_vehcale_delete/:car_id", ensureAuth, async (req, res) => {
   try {
     const { car_id } = req.params;
 
-    const pool = await sql.connect(dbConfig);
-    const request = pool.request();
-
-    // Add the parameter safely
-    request.input("car_id", sql.Int, car_id);
-
-    const result = await request.query("DELETE FROM web_cars WHERE car_id = @car_id");
+    const result = await pool.query("DELETE FROM web_cars WHERE car_id = $1", [car_id]);
 
     // Check if a row was deleted
-    if (result.rowsAffected[0] > 0) {
+    if (result.rowCount > 0) {
       res.json({ message: `✅ Vehicle with ID ${car_id} deleted successfully!` });
     } else {
       res.status(404).json({ error: "Vehicle not found." });
@@ -1326,6 +1005,7 @@ app.delete("/api/web_vehcale_delete/:car_id", async (req, res) => {
 });
 
 
+// public: contact form
 app.post("/api/contactforminseration", async (req, res) => {
   const { Fullname, Email, Message } = req.body;
 
@@ -1335,18 +1015,10 @@ app.post("/api/contactforminseration", async (req, res) => {
   }
 
   try {
-    // Connect to database
-    const pool = await sql.connect(dbConfig);
-
-    // Insert data into contact_section
-    await pool.request()
-      .input("full_name", sql.NVarChar, Fullname)
-      .input("email", sql.NVarChar, Email)
-      .input("message", sql.NVarChar, Message)
-      .query(`
-        INSERT INTO contact_section (full_name, email, message)
-        VALUES (@full_name, @email, @message)
-      `);
+    await pool.query(
+      'INSERT INTO contact_section (full_name, email, message) VALUES ($1, $2, $3)',
+      [Fullname, Email, Message]
+    );
 
     // Respond with success
     res.status(200).json({ message: "Message submitted successfully" });
@@ -1361,20 +1033,16 @@ app.post("/api/contactforminseration", async (req, res) => {
 
 
 
-app.get("/api/contactform", async (req, res) => {
+app.get("/api/contactform", ensureAuth, async (req, res) => {
   try {
-    const pool = await sql.connect(dbConfig);
-
     // Select all messages, latest first
-    const result = await pool.request()
-      .query(`
-        SELECT id, full_name, email, message, is_read,submitted_at
-        FROM contact_section
-        ORDER BY submitted_at DESC
-      `);
+    const result = await pool.query(`
+      SELECT id, full_name, email, message, is_read, submitted_at
+      FROM contact_section
+      ORDER BY submitted_at DESC
+    `);
 
-    // Send data to frontend
-    res.status(200).json(result.recordset);
+    res.status(200).json(result.rows);
 
   } catch (error) {
     console.error("Database error:", error);
@@ -1386,7 +1054,7 @@ app.get("/api/contactform", async (req, res) => {
 
 
 
-app.post("/api/send-email", async (req, res) => {
+app.post("/api/send-email", ensureAuth, async (req, res) => {
   const { to, subject, message } = req.body;
 
   if (!to || !subject || !message) {
@@ -1422,17 +1090,13 @@ app.post("/api/send-email", async (req, res) => {
 
 
 //delete message
-app.delete("/api/delete_msg/:id", async (req, res) => {
+app.delete("/api/delete_msg/:id", ensureAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const pool = await sql.connect(dbConfig);
 
-    const result = await pool
-      .request()
-      .input("id", sql.Int, id)
-      .query("DELETE FROM contact_section WHERE id = @id");
+    const result = await pool.query("DELETE FROM contact_section WHERE id = $1", [id]);
 
-    if (result.rowsAffected[0] > 0) {
+    if (result.rowCount > 0) {
       res.json({ message: "Message deleted successfully" });
     } else {
       res.status(404).json({ error: "Message not found" });
@@ -1445,18 +1109,11 @@ app.delete("/api/delete_msg/:id", async (req, res) => {
 
 
 
-app.put("/api/messages/:id/mark-read", async (req, res) => {
+app.put("/api/messages/:id/mark-read", ensureAuth, async (req, res) => {
   const { id } = req.params;
-  console.log("This is " + id);
 
   try {
-    const pool = await sql.connect(dbConfig);
-
-    await pool
-      .request()
-      .input("id", sql.Int, id)
-      .query("UPDATE contact_section SET is_read = 1 WHERE id = @id");
-
+    await pool.query("UPDATE contact_section SET is_read = true WHERE id = $1", [id]);
     res.sendStatus(200);
   } catch (err) {
     console.error(err);
@@ -1465,21 +1122,12 @@ app.put("/api/messages/:id/mark-read", async (req, res) => {
 });
 
 
-app.get("/api/unreadmsgs",async (req,res)=>{
+app.get("/api/unreadmsgs", ensureAuth, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT COUNT(*) AS "unreadCount" FROM contact_section WHERE is_read = false');
 
-
-  try{
-    const pool = await sql.connect(dbConfig);
-  const result = await pool.request().query(`
-    SELECT COUNT(*) AS unreadCount
-    FROM contact_section
-    WHERE is_read = 0
-  `);
-
-
-    const unreadCount = result.recordset[0].unreadCount;
-   res.status(200).json({ unreadCount }); // send only count
-
+    const unreadCount = result.rows[0].unreadCount;
+    res.status(200).json({ unreadCount }); // send only count
 
   } catch (error) {
     console.error("Database error:", error);
@@ -1508,43 +1156,13 @@ app.get("/api/logout", (req, res) => {
 });
 
 
+// photo too big or another upload problem
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ error: err.code === "LIMIT_FILE_SIZE" ? "Each photo must be 4 MB or smaller." : err.message });
+  }
+  console.error(err);
+  res.status(500).json({ error: "Internal Server Error" });
+});
 
-
-
-
-
-
-
-
-
-
-
-
-
-// async function migratePasswords() {
-//   try {
-//     const pool = await sql.connect(dbConfig);
-//     const users = await pool.request().query('SELECT admin_id, password_hash FROM admin_users');
-
-//     for (const user of users.recordset) {
-//       const plainPassword = user.password_hash;
-
-//       // Skip if already hashed
-//       if (plainPassword.startsWith('$2b$')) continue;
-
-//       const hashed = await bcrypt.hash(plainPassword, saltRounds);
-
-//       await pool.request()
-//         .input('hashed', sql.NVarChar, hashed)
-//         .input('id', sql.Int, user.admin_id)
-//         .query('UPDATE admin_users SET password_hash = @hashed WHERE admin_id = @id');
-//     }
-
-//     console.log('Passwords migrated to bcrypt hashes.');
-//   } catch (err) {
-//     console.error('Migration error:', err);
-//   }
-// }
-
-
-// migratePasswords(); // 🔒 Run this only once, then comment it out
+export default app;

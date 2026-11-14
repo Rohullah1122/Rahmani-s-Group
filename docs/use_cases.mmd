@@ -1,0 +1,17 @@
+flowchart LR
+    C([Customer])
+    A([Admin])
+    subgraph S [Rahmani's Junkyard]
+        U1(Search vehicles by make and model)
+        U2(View car details and photos)
+        U3(Sell my car with 4 photos)
+        U4(Send a message)
+        U5(Log in / reset password by email)
+        U6(View sales and revenue dashboard)
+        U7(Add vehicles, parts and stock)
+        U8(Manage customers and suppliers)
+        U9(Record sales and payments)
+        U10(Read and reply to messages)
+    end
+    C --- U1 & U2 & U3 & U4
+    A --- U5 & U6 & U7 & U8 & U9 & U10
